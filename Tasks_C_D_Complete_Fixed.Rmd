@@ -44,9 +44,21 @@ suppressMessages({
 # Load the Olympics tweets dataset
 data <- read.csv("Olympics_tweets.csv", stringsAsFactors = FALSE)
 
-# Data preprocessing
-data$date_parsed <- dmy_hm(data$date)
-data$user_created_parsed <- dmy_hm(data$user_created_at)
+# Data preprocessing with error handling for date parsing
+tryCatch({
+  data$date_parsed <- dmy_hm(data$date)
+  data$user_created_parsed <- dmy_hm(data$user_created_at)
+  
+  # Check for parsing failures
+  na_dates <- sum(is.na(data$date_parsed))
+  if (na_dates > 0) {
+    cat("Warning:", na_dates, "dates could not be parsed\n")
+  }
+}, error = function(e) {
+  cat("Error in date parsing:", conditionMessage(e), "\n")
+  cat("Expected format: day/month/year hour:minute (e.g., '23/07/2021 10:30')\n")
+})
+
 data$tweet_date <- as.Date(data$date_parsed)
 data$tweet_hour <- hour(data$date_parsed)
 data$tweet_dow <- wday(data$date_parsed, label = TRUE)
@@ -158,10 +170,14 @@ This analysis employs text mining techniques to identify keywords that correlate
 
 ### (a) R Code:
 ```{r question-c3}
+# Define outlier thresholds as constants for transparency
+MAX_FOLLOWERS_THRESHOLD <- 10000000
+MAX_FRIENDS_THRESHOLD <- 100000
+
 # Clean data for analysis
 social_analysis <- data %>%
   filter(!is.na(account_age_days) & account_age_days > 0) %>%
-  filter(user_followers < 10000000 & user_friends < 100000) %>%  # Remove outliers
+  filter(user_followers < MAX_FOLLOWERS_THRESHOLD & user_friends < MAX_FRIENDS_THRESHOLD) %>%
   distinct(user_screen_name, .keep_all = TRUE)  # One record per user
 
 # Correlation analysis
@@ -313,6 +329,13 @@ This analysis identifies users who consistently generate high engagement indepen
 
 ### (a) R Code:
 ```{r question-c5b}
+# Define spammer detection thresholds as constants
+SPAM_TWEETS_PER_DAY_THRESHOLD <- 50
+SPAM_LOW_ENGAGEMENT_THRESHOLD <- 1
+SPAM_DUPLICATE_RATIO_THRESHOLD <- 0.3
+SPAM_RETWEET_RATIO_THRESHOLD <- 0.8
+SPAM_SCORE_MINIMUM <- 2
+
 # Define spammer criteria
 spammer_analysis <- data %>%
   group_by(user_screen_name) %>%
@@ -326,23 +349,23 @@ spammer_analysis <- data %>%
     .groups = 'drop'
   ) %>%
   mutate(
-    spammer_score = (tweets_per_day > 50) + 
-                   (avg_engagement < 1) + 
-                   (duplicate_text_ratio > 0.3) + 
-                   (retweet_ratio > 0.8)
+    spammer_score = (tweets_per_day > SPAM_TWEETS_PER_DAY_THRESHOLD) + 
+                   (avg_engagement < SPAM_LOW_ENGAGEMENT_THRESHOLD) + 
+                   (duplicate_text_ratio > SPAM_DUPLICATE_RATIO_THRESHOLD) + 
+                   (retweet_ratio > SPAM_RETWEET_RATIO_THRESHOLD)
   ) %>%
-  filter(spammer_score >= 2) %>%  # Users meeting 2+ spam criteria
+  filter(spammer_score >= SPAM_SCORE_MINIMUM) %>%  # Users meeting 2+ spam criteria
   arrange(desc(tweets_per_day))
 
 print("Potential spammers (score >= 2):")
 print(head(spammer_analysis, 10))
 
 cat("\nSpammer Detection Criteria:")
-cat("\n1. High posting frequency (>50 tweets/day)")
-cat("\n2. Low engagement (<1 avg engagement)")
-cat("\n3. High duplicate content (>30% duplicate text)")
-cat("\n4. Excessive retweeting (>80% retweets)")
-cat("\nUsers meeting 2+ criteria are flagged as potential spammers.")
+cat("\n1. High posting frequency (>", SPAM_TWEETS_PER_DAY_THRESHOLD, "tweets/day)")
+cat("\n2. Low engagement (<", SPAM_LOW_ENGAGEMENT_THRESHOLD, "avg engagement)")
+cat("\n3. High duplicate content (>", SPAM_DUPLICATE_RATIO_THRESHOLD * 100, "% duplicate text)")
+cat("\n4. Excessive retweeting (>", SPAM_RETWEET_RATIO_THRESHOLD * 100, "% retweets)")
+cat("\nUsers meeting", SPAM_SCORE_MINIMUM, "+ criteria are flagged as potential spammers.")
 ```
 
 ### (b) Code Output and Answer:
@@ -357,6 +380,9 @@ The spammer detection algorithm employs multiple behavioral indicators rather th
 
 ### (a) R Code:
 ```{r question-c6a}
+# Define minimum sentiment threshold for statistical reliability
+MIN_SENTIMENT_WORDS <- 20
+
 # Get sentiment lexicon
 nrc <- get_sentiments("nrc")
 
@@ -372,7 +398,7 @@ sentiment_analysis <- data %>%
     total_sentiment = positive + negative,
     negative_ratio = negative / total_sentiment
   ) %>%
-  filter(total_sentiment >= 20) %>%  # Minimum threshold for reliability
+  filter(total_sentiment >= MIN_SENTIMENT_WORDS) %>%  # Minimum threshold for reliability
   arrange(desc(negative_ratio))
 
 print("Top 10 users by negative sentiment ratio:")
@@ -383,7 +409,7 @@ print(head(sentiment_analysis, 10))
 The top 3 users with highest negative sentiment ratios are: **kegan61438051** (100% negative), **mniskhoka** (100% negative), and **Luketherad88** (95% negative). These users consistently post content with negative emotional tone during the Olympic period.
 
 ### (c) Explanation:
-This analysis uses the NRC Word-Emotion Association Lexicon to classify tweet sentiment based on emotional word content. The methodology tokenizes text, matches words against the sentiment lexicon, and calculates user-level sentiment ratios. The 20-word minimum threshold ensures statistical reliability by filtering users with insufficient sentiment-bearing content. Users with extreme negative ratios may be expressing dissatisfaction, criticism, or engaging in controversy-driven content during the Olympics, which could indicate different engagement strategies or genuine emotional responses to events.
+This analysis uses the NRC Word-Emotion Association Lexicon to classify tweet sentiment based on emotional word content. The methodology tokenizes text, matches words against the sentiment lexicon, and calculates user-level sentiment ratios. The minimum threshold of 20 sentiment-bearing words ensures statistical reliability by filtering users with insufficient sentiment content. Users with extreme negative ratios may be expressing dissatisfaction, criticism, or engaging in controversy-driven content during the Olympics, which could indicate different engagement strategies or genuine emotional responses to events.
 
 ---
 
@@ -715,16 +741,21 @@ validation_prepared <- validation_prepared[complete.cases(validation_prepared), 
 tryCatch({
   cat("\nTraining baseline Random Forest model...\n")
   
+  # Calculate mtry parameter using standard formula for classification
+  n_features <- ncol(train_prepared) - 1
+  mtry_baseline <- floor(sqrt(n_features))
+  
   model_rf_baseline <- randomForest(
     label ~ .,
     data = train_prepared,
     ntree = 500,
-    mtry = sqrt(ncol(train_prepared) - 1),
+    mtry = mtry_baseline,
     importance = TRUE,
     na.action = na.omit
   )
   
   cat("Model training completed successfully.\n")
+  cat("Features used:", n_features, "| mtry:", mtry_baseline, "\n")
   print(model_rf_baseline)
   
   # Make predictions on validation set
@@ -824,14 +855,20 @@ if (exists("model_rf_baseline")) {
   tryCatch({
     cat("\nTraining Random Forest with top 10 features...\n")
     
+    # Calculate mtry for reduced feature set
+    n_features_reduced <- ncol(train_reduced) - 1
+    mtry_reduced <- floor(sqrt(n_features_reduced))
+    
     model_rf_reduced <- randomForest(
       label ~ .,
       data = train_reduced,
       ntree = 500,
-      mtry = sqrt(ncol(train_reduced) - 1),
+      mtry = mtry_reduced,
       importance = TRUE,
       na.action = na.omit
     )
+    
+    cat("Reduced model - Features:", n_features_reduced, "| mtry:", mtry_reduced, "\n")
     
     # Make predictions
     predictions_reduced <- predict(model_rf_reduced, validation_reduced, type = "class")
@@ -1040,14 +1077,20 @@ tryCatch({
 tryCatch({
   cat("\n=== Training Enhanced Random Forest ===\n")
   
+  # Calculate enhanced mtry parameter (1.5x standard for better feature exploration)
+  n_features <- ncol(train_prepared) - 1
+  mtry_enhanced <- ceiling(sqrt(n_features) * 1.5)
+  
   model_rf_enhanced <- randomForest(
     label ~ .,
     data = train_prepared,
     ntree = 1000,
-    mtry = ceiling(sqrt(ncol(train_prepared) - 1) * 1.5),
+    mtry = mtry_enhanced,
     importance = TRUE,
     na.action = na.omit
   )
+  
+  cat("Enhanced RF - Features:", n_features, "| mtry:", mtry_enhanced, "| trees: 1000\n")
   
   predictions_rf_enhanced <- predict(model_rf_enhanced, validation_prepared, type = "class")
   
